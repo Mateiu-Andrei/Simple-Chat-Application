@@ -2,6 +2,28 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <thread>
+
+void clearConsole() {
+    std::cout << "\033[2J\033[1;1H"; // ANSI escape code to clear the console
+}
+
+void receiveMessages(int clientSocket) {
+    char buffer[1024] = {0};
+    while (true) {
+        int valread = read(clientSocket, buffer, 1024);
+        if (valread <= 0) {
+            std::cout << "Disconnected from server" << std::endl;
+            close(clientSocket);
+            exit(0);
+        }
+        std::string message(buffer);
+        std::cout << "\n" << message << std::endl;
+        std::cout << "> "; // Reprint the prompt
+        fflush(stdout); // Ensure the prompt is displayed immediately
+        memset(buffer, 0, sizeof(buffer));
+    }
+}
 
 int main() {
     int clientSocket;
@@ -28,16 +50,26 @@ int main() {
         return -1;
     }
 
+    std::string username;
+    std::cout << "Enter your username: ";
+    std::getline(std::cin, username);
+
+    clearConsole();
+    
+    std::thread(receiveMessages, clientSocket).detach();
+
     std::string message;
-    std::cout << "Enter your message: ";
-    std::getline(std::cin, message);
+    while (true) {
+        std::cout << "> ";
+        std::getline(std::cin, message);
 
-    send(clientSocket, message.c_str(), message.size(), 0);
+        if (message == "/exit") {
+            send(clientSocket, message.c_str(), message.size(), 0);
+            break;
+        }
 
-    char buffer[1024] = {0};
-    int valread = read(clientSocket, buffer, 1024);
-    if (valread > 0) {
-        std::cout << "Received: " << std::string(buffer) << std::endl;
+        std::string fullMessage = username + ": " + message;
+        send(clientSocket, fullMessage.c_str(), fullMessage.size(), 0);
     }
 
     close(clientSocket);

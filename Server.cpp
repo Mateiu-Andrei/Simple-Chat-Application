@@ -5,32 +5,39 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <mutex>
+#include <algorithm>
 
-std::vector<int> clients;
+std::vector<int> clientSockets;
 std::mutex clientsMutex;
 
-void handleClientConnection(int clientSocket) {
+void handleClientConnection(int clientSocket, struct sockaddr_in address, int serverPort) {
     char buffer[1024] = {0};
     while (true) {
         int valread = read(clientSocket, buffer, 1024);
-        if (valread > 0) {
-            std::string message(buffer);
-            std::cout << "Received: " << message << std::endl;
-
-            // Broadcast message to all clients
-            std::lock_guard<std::mutex> lock(clientsMutex);
-            for (int client : clients) {
-                if (client != clientSocket) {
-                    send(client, message.c_str(), message.size(), 0);
-                }
-            }
-        } else {
-            // Remove client from the list
-            std::lock_guard<std::mutex> lock(clientsMutex);
-            clients.erase(std::remove(clients.begin(), clients.end(), clientSocket), clients.end());
+        if (valread <= 0) {
             close(clientSocket);
-            break;
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clientSockets.erase(std::remove(clientSockets.begin(), clientSockets.end(), clientSocket), clientSockets.end());
+            return;
         }
+
+        std::string message(buffer);
+        if (message.find("/exit") != std::string::npos) {
+            close(clientSocket);
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clientSockets.erase(std::remove(clientSockets.begin(), clientSockets.end(), clientSocket), clientSockets.end());
+            return;
+        }
+
+        std::string formattedMessage = "\n" + message; // Add newline before the message
+
+        std::lock_guard<std::mutex> lock(clientsMutex);
+        for (int socket : clientSockets) {
+            if (socket != clientSocket) {
+                send(socket, formattedMessage.c_str(), formattedMessage.size(), 0);
+            }
+        }
+        memset(buffer, 0, sizeof(buffer));
     }
 }
 
@@ -70,17 +77,27 @@ int main() {
 
     std::cout << "Server listening on port " << serverPort << "..." << std::endl;
 
+    std::vector<std::thread> threads;
+
     while (true) {
         int clientSocket;
         if ((clientSocket = accept(serverSocket, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
             perror("Accept");
             continue;
         }
+
         {
             std::lock_guard<std::mutex> lock(clientsMutex);
-            clients.push_back(clientSocket);
+            clientSockets.push_back(clientSocket);
         }
-        std::thread(handleClientConnection, clientSocket).detach();
+
+        threads.emplace_back(handleClientConnection, clientSocket, address, serverPort);
+    }
+
+    for (auto& th : threads) {
+        if (th.joinable()) {
+            th.join();
+        }
     }
 
     close(serverSocket);
