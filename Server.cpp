@@ -4,19 +4,34 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <mutex>
 
-void handleClientConnection(int clientSocket, struct sockaddr_in address, int serverPort) {
+std::vector<int> clients;
+std::mutex clientsMutex;
+
+void handleClientConnection(int clientSocket) {
     char buffer[1024] = {0};
-    int valread = read(clientSocket, buffer, 1024);
-    if (valread > 0) {
-        std::string message(buffer);
-        std::string formattedMessage = "from (ip: " + std::string(inet_ntoa(address.sin_addr)) + 
-                                       "; port source: " + std::to_string(ntohs(address.sin_port)) + 
-                                       "; port destination: " + std::to_string(serverPort) + ") " + message;
-        std::cout << formattedMessage << std::endl;
-        send(clientSocket, formattedMessage.c_str(), formattedMessage.size(), 0);
+    while (true) {
+        int valread = read(clientSocket, buffer, 1024);
+        if (valread > 0) {
+            std::string message(buffer);
+            std::cout << "Received: " << message << std::endl;
+
+            // Broadcast message to all clients
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            for (int client : clients) {
+                if (client != clientSocket) {
+                    send(client, message.c_str(), message.size(), 0);
+                }
+            }
+        } else {
+            // Remove client from the list
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clients.erase(std::remove(clients.begin(), clients.end(), clientSocket), clients.end());
+            close(clientSocket);
+            break;
+        }
     }
-    close(clientSocket);
 }
 
 int main() {
@@ -55,21 +70,17 @@ int main() {
 
     std::cout << "Server listening on port " << serverPort << "..." << std::endl;
 
-    std::vector<std::thread> threads;
-
     while (true) {
         int clientSocket;
         if ((clientSocket = accept(serverSocket, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
             perror("Accept");
             continue;
         }
-        threads.emplace_back(handleClientConnection, clientSocket, address, serverPort);
-    }
-
-    for (auto& th : threads) {
-        if (th.joinable()) {
-            th.join();
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clients.push_back(clientSocket);
         }
+        std::thread(handleClientConnection, clientSocket).detach();
     }
 
     close(serverSocket);
